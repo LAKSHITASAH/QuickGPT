@@ -5,64 +5,171 @@ import fetch from "node-fetch";
 
 const app = express();
 
-// ✅ DEBUG LINE — proves which file Render is running
-console.log("✅ RUNNING: server/index.js (Render)");
-
-app.use(cors());
-app.use(express.json({ limit: "2mb" }));
-
-// ✅ Debug route (important)
-app.get("/__whoami", (_, res) =>
-  res.json({ running: "server/index.js", status: "ok" })
+// CORS: allow your Vercel domain + local dev.
+// (You can tighten this later.)
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
 );
 
-// Root route
+app.use(express.json({ limit: "10mb" }));
+
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
+const GROQ_VISION_MODEL =
+  process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+
+const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
+
 app.get("/", (_, res) => res.send("QuickGPT backend running ✅"));
 
-// Health route
-app.get("/health", (_, res) => res.json({ ok: true }));
+app.get("/health", (_, res) => {
+  res.json({
+    ok: true,
+    provider: "groq",
+    model: GROQ_MODEL,
+    visionModel: GROQ_VISION_MODEL,
+  });
+});
 
-// Chat route
-app.post("/api/chat", async (req, res) => {
-  try {
-    const { messages } = req.body;
-    const model = process.env.HF_MODEL || "HuggingFaceH4/zephyr-7b-beta";
+function hasImages(messages) {
+  for (const m of messages || []) {
+    const c = m?.content;
+    if (Array.isArray(c) && c.some((p) => p?.type === "image_url")) return true;
+  }
+  return false;
+}
 
-    const prompt =
-      (messages || [])
-        .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-        .join("\n") + "\nASSISTANT:";
+function normalizeMessages(messages) {
+  const out = [];
+  for (const m of messages || []) {
+    if (!m?.role) continue;
+    if (!["system", "user", "assistant"].includes(m.role)) continue;
 
-    const r = await fetch(
-      `https://api-inference.huggingface.co/models/${model}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.HF_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          inputs: prompt,
-          parameters: { max_new_tokens: 250, temperature: 0.7 },
-        }),
-      }
-    );
+    const c = m.content;
 
-    const data = await r.json();
-
-    if (!r.ok) {
-      return res.status(r.status).json({ error: "HF error", details: data });
+    if (typeof c === "string") {
+      out.push({ role: m.role, content: c });
+      continue;
     }
 
-    const full = data?.[0]?.generated_text || "";
-    const answer = full.split("ASSISTANT:").pop().trim();
+    if (Array.isArray(c)) {
+      const parts = c
+        .map((p) => {
+          if (p?.type === "text" && typeof p.text === "string")
+            return { type: "text", text: p.text };
+          if (p?.type === "image_url" && p?.image_url?.url)
+            return { type: "image_url", image_url: { url: p.image_url.url } };
+          return null;
+        })
+        .filter(Boolean);
 
-    res.json({ text: answer });
-  } catch (err) {
-    res.status(500).json({ error: "Server error", details: err.message });
+      if (parts.length) out.push({ role: m.role, content: parts });
+    }
+  }
+
+  if (!out.length) out.push({ role: "user", content: "Hello" });
+  return out;
+}
+
+async function callGroq({ model, messages }) {
+  if (!GROQ_API_KEY) {
+    const err = new Error("Missing GROQ_API_KEY in environment");
+    err.status = 500;
+    throw err;
+  }
+
+  const resp = await fetch(GROQ_CHAT_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.7,
+      max_tokens: 600,
+      stream: false,
+    }),
+  });
+
+  const raw = await resp.text();
+  if (!resp.ok) {
+    let msg = raw;
+    try {
+      const j = JSON.parse(raw);
+      msg = j?.error?.message || j?.message || j?.detail || raw;
+    } catch {}
+    const err = new Error(`Groq ${resp.status}: ${msg}`);
+    err.status = resp.status;
+    err.raw = raw;
+    throw err;
+  }
+
+  const data = JSON.parse(raw);
+  return String(data?.choices?.[0]?.message?.content || "").trim();
+}
+
+app.post("/api/chat", async (req, res) => {
+  try {
+    const messages = normalizeMessages(req.body?.messages || []);
+    const wantVision = hasImages(messages);
+    const model = wantVision ? GROQ_VISION_MODEL : GROQ_MODEL;
+
+    const text = await callGroq({ model, messages });
+    res.json({ text });
+  } catch (e) {
+    res.status(e?.status || 500).json({
+      error: "Backend error",
+      details: e?.message || String(e),
+    });
   }
 });
 
-// Port (Render-compatible)
+// --- SSE streaming (ChatGPT-like typing) ---
+function sse(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function chunkText(text, size = 24) {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
+  return chunks;
+}
+
+app.post("/api/chat/stream", async (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  try {
+    const messages = normalizeMessages(req.body?.messages || []);
+    const wantVision = hasImages(messages);
+    const model = wantVision ? GROQ_VISION_MODEL : GROQ_MODEL;
+
+    sse(res, "status", { stage: "calling_model" });
+    const full = await callGroq({ model, messages });
+
+    for (const part of chunkText(full, 24)) {
+      sse(res, "delta", { text: part });
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    sse(res, "done", { ok: true });
+    res.end();
+  } catch (e) {
+    sse(res, "error", { message: e?.message || String(e) });
+    res.end();
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
