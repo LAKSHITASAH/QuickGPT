@@ -1,10 +1,15 @@
 import http from "http";
 import fs from "fs";
 
+// If you're on Node < 18, uncomment the next line:
+// import fetch from "node-fetch";
+
+// --- Env loading (keep your original file-reading approach) ---
 const env = fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "";
+
 function getEnv(k, d = "") {
   const m = env.match(new RegExp(`^${k}=(.*)$`, "m"));
-  return m ? m[1].trim() : (process.env[k] || d);
+  return m ? m[1].trim() : process.env[k] || d;
 }
 
 const PORT = Number(getEnv("PORT", "8080"));
@@ -83,7 +88,11 @@ function normalizeMessages(messages) {
 }
 
 async function callGroq({ model, messages }) {
-  const resp = await fetch(GROQ_CHAT_URL, {
+  // Ensure fetch exists (Node 18+ has global fetch)
+  const _fetch = typeof fetch !== "undefined" ? fetch : null;
+  if (!_fetch) throw new Error("fetch is not available. Use Node 18+ or install node-fetch.");
+
+  const resp = await _fetch(GROQ_CHAT_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${GROQ_API_KEY}`,
@@ -136,7 +145,6 @@ async function groqGenerate(messages) {
       return await callGroq({ model, messages: normalized });
     } catch (e) {
       lastErr = e;
-      // If model is invalid/deprecated, try next. Otherwise, still try next but keep error.
       continue;
     }
   }
@@ -164,6 +172,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
+  }
+
+  // ✅ Add "/" route here (replaces your invalid app.get)
+  if (req.url === "/" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    return res.end("QuickGPT backend running ✅");
   }
 
   if (req.url === "/health" && req.method === "GET") {
