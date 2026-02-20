@@ -1,16 +1,8 @@
-# Prisma DB
 server/prisma/dev.db
 server/prisma/*.db
 server/prisma/*.db-journal
-
-# Env
 .env
 **/.env
-
-# Node
 node_modules
 **/node_modules
-
-# Builds
 dist
-**/dist

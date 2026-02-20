@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* Optional: keep this for full-screen layouts */
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+}
+
+/* Remove Vite default styles that break your layout */
