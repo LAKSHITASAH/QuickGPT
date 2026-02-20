@@ -3,6 +3,10 @@ import { clearSession, getSession, loginUser, signupUser } from "./auth";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+// ✅ FIX: In dev, call relative API so Vite proxy can forward to backend.
+// ✅ In prod, this will call same-origin /api/... (recommended setup).
+const API_STREAM_URL = "/api/chat/stream";
+
 function cn(...a) {
   return a.filter(Boolean).join(" ");
 }
@@ -193,7 +197,6 @@ function Bubble({ role, children, images, onOpenImage }) {
             : "bg-white/5 border border-white/10 text-white"
         )}
       >
-        {/* Image thumbnails inside bubble */}
         {Array.isArray(images) && images.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
             {images.map((img, idx) => (
@@ -258,8 +261,6 @@ export default function App() {
   const fileRef = useRef(null);
   const endRef = useRef(null);
 
-  // ✅ Lightbox state now supports multi-image navigation
-  // { images: [{name,dataUrl}, ...], index: number } | null
   const [lightbox, setLightbox] = useState(null);
 
   useEffect(() => {
@@ -292,7 +293,6 @@ export default function App() {
     });
   }
 
-  // ✅ close on ESC + navigate with ArrowLeft/ArrowRight
   useEffect(() => {
     function onKey(e) {
       if (e.key === "Escape") setLightbox(null);
@@ -342,7 +342,6 @@ export default function App() {
   }
 
   async function handlePickImages(e) {
-    // ✅ supports adding MANY images (already multiple)
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
@@ -419,8 +418,8 @@ export default function App() {
       const nextMessagesInternal = [...activeChat.messages, userMsg];
       const nextMessagesForApi = toApiMessages(nextMessagesInternal);
 
-      // ✅ FIXED: single-line URL string (no newline)
-      const res = await fetch("http://localhost:8080/api/chat/stream", {
+      // ✅ FIXED: use relative API path (/api/...) so it works with Vite proxy
+      const res = await fetch(API_STREAM_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: nextMessagesForApi }),
@@ -456,9 +455,15 @@ export default function App() {
           const dataLine = lines.find((l) => l.startsWith("data:"));
 
           const ev = eventLine ? eventLine.replace("event:", "").trim() : "";
-          const data = dataLine
-            ? JSON.parse(dataLine.replace("data:", "").trim())
-            : null;
+
+          let data = null;
+          if (dataLine) {
+            try {
+              data = JSON.parse(dataLine.replace("data:", "").trim());
+            } catch {
+              data = null;
+            }
+          }
 
           if (ev === "delta" && data?.text) {
             updateActiveChat((c) => {
@@ -510,7 +515,6 @@ export default function App() {
         <div className="absolute top-1/4 -right-40 h-[520px] w-[520px] rounded-full bg-indigo-500/15 blur-[120px]" />
       </div>
 
-      {/* ✅ Lightbox (with left/right navigation for multiple images) */}
       {lightbox && lightboxCurrent && (
         <div
           className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
@@ -529,7 +533,6 @@ export default function App() {
               ✕
             </button>
 
-            {/* Left arrow */}
             {lightboxImages.length > 1 && (
               <button
                 type="button"
@@ -546,7 +549,6 @@ export default function App() {
               </button>
             )}
 
-            {/* Right arrow */}
             {lightboxImages.length > 1 && (
               <button
                 type="button"

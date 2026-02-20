@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://quickgpt-b54i.onrender.com/api/$1"
+    }
+  ]
+}

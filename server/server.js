@@ -208,10 +208,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.url === "/api/chat/stream" && req.method === "POST") {
+    // ✅ Slight SSE header improvement (does not change features)
     res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     });
 
     try {
